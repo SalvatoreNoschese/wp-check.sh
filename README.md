@@ -46,7 +46,7 @@ The exit code is `0` when there are no problems, so it can run from cron and mai
 
 ## Italiano
 
-Controllo rapido della sicurezza di un sito WordPress, visto da fuori. Funziona ovunque ci siano bash e curl, anche dal telefono con Termux, e risponde in italiano o in inglese. Fa solo richieste in lettura, come un visitatore qualsiasi: usalo sui tuoi siti. L'indirizzo di login personalizzato non viene mai mostrato. Articolo con i dettagli: [salvatorenoschese.it](https://salvatorenoschese.it/).
+Controllo rapido della sicurezza di un sito WordPress, visto da fuori. Funziona ovunque ci siano bash e curl, anche dal telefono con Termux, e risponde in italiano o in inglese. Fa solo richieste in lettura, come un visitatore qualsiasi: usalo sui tuoi siti. L'indirizzo di login personalizzato non viene mai mostrato. Articolo con i dettagli: [salvatorenoschese.it/wp-check***](https://salvatorenoschese.it/wp-check-sh-controlla-la-sicurezza-del-tuo-wordpress/).
 
 ## License
 
