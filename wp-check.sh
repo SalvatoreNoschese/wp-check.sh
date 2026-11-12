@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # wp-check.sh — quick outside-in security check of a WordPress site.
 # Usage:  bash wp-check.sh [--it|--en] [--no-update] [site]      e.g. bash wp-check.sh --en example.com
-# Read-only requests, like any visitor: no login attempts, no attacks. Use it on your own sites.
+# Read-only requests, like any visitor: no login attempts, no attacks (except one optional, confirmed
+# CAPTCHA test with a made-up user). Use it on your own sites.
 # Salvatore Noschese — https://github.com/SalvatoreNoschese/wp-check.sh — GPLv3
 
-WPC_VER="1.1"
+WPC_VER="1.2"
 UPDATE_URL="https://raw.githubusercontent.com/SalvatoreNoschese/wp-check.sh/main/wp-check.sh"
 UA="Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
 ok=0; ko=0; warn=0
@@ -103,6 +104,39 @@ check_update() {
 }
 check_update
 
+skipped() { SKIPPED+="${SKIPPED:+; }$1"; }
+
+# Does the CAPTCHA really block? The only check that is not read-only: it sends the login form once, with a
+# made-up user, a random password and no CAPTCHA answer. Nobody can log in, but the server logs a failed
+# login, so it runs only after a confirmation (default no), never from cron.
+captcha_test() {
+	local page act user resp code err ans
+	if [[ ! -t 0 || ! -t 1 ]]; then skipped "$(t "verifica che il CAPTCHA blocchi (serve una conferma)" "check that the CAPTCHA blocks (needs a confirmation)")"; return; fi
+	echo "    $(t "Verifico che il CAPTCHA blocchi davvero? Invia il form una volta, con un utente inventato e senza CAPTCHA." "Check that the CAPTCHA really blocks? It sends the form once, with a made-up user and no CAPTCHA.")"
+	echo "    $(t "Nessuno può entrare, ma il server lo registra come accesso fallito: fallo solo sul tuo sito." "Nobody can log in, but the server logs it as a failed login: do it only on your own site.")"
+	read -r -p "    $(t "Procedo? [s/N]" "Go ahead? [y/N]") " ans || ans=""
+	if [[ ! "$ans" =~ ^[sSyY] ]]; then skipped "$(t "verifica che il CAPTCHA blocchi (non confermata)" "check that the CAPTCHA blocks (not confirmed)")"; return; fi
+	# Post where the form posts, as a browser would (the action may differ from the page address).
+	page=$(get "$1")
+	act=$(grep -oiE '<form[^>]*id="loginform"[^>]*>' <<<"$page" | grep -oiE 'action="[^"]+"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g; s/&#038;/\&/g')
+	[[ "$act" == /* ]] && act="$B$act"; [[ "$act" == http* ]] || act="$1"
+	user="wpcheck_$(od -An -N5 -tx1 /dev/urandom | tr -d ' \n')"
+	resp=$(curl -sL --post301 --post302 -A "$UA" --max-time 15 -b "wordpress_test_cookie=WP%20Cookie%20check" \
+		--data "log=$user&pwd=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')&wp-submit=Log+In&testcookie=1" \
+		-w $'\n%{http_code}' "$act")
+	code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"
+	# Only the error box counts: the page shown again may prefill the user field even when the CAPTCHA blocked.
+	err=""; [[ "$resp" == *'id="login_error"'* ]] && { err="${resp#*id=\"login_error\"}"; err="${err%%</div>*}"; }
+	if [[ -n "$err" && "$err" == *"$user"* ]]; then
+		fail "$(t "Il CAPTCHA non blocca: il form arriva a WordPress senza risposta CAPTCHA" "The CAPTCHA does not block: the form reaches WordPress without a CAPTCHA answer")"
+		how "$(t "Controlla che il plugin CAPTCHA protegga anche questo indirizzo di login (opzione per login personalizzati) o provane un altro. Alcuni plugin verificano solo per utenti esistenti: in quel caso è un falso allarme." "Make sure the CAPTCHA plugin also protects this login address (option for custom logins) or try another one. Some plugins only check for existing users: then this is a false alarm.")"
+	elif grep -qiE 'captcha|robot|anti-?bot|altcha|turnstile|verifica|verification|challenge' <<<"${err:-$resp}" || [[ "$code" =~ ^(403|429)$ ]]; then
+		pass "$(t "Il CAPTCHA blocca davvero: form fermato senza risposta CAPTCHA" "The CAPTCHA really blocks: form stopped without a CAPTCHA answer") ($code)"
+	else
+		hint "$(t "Risposta non chiara al form senza CAPTCHA" "Unclear answer to the form without CAPTCHA") ($code): $(t "prova a mano, vedi il README" "test by hand, see the README")"
+	fi
+}
+
 # One full check of a site; returns 0 when there are no problems.
 check_site() {
 	ok=0; ko=0; warn=0
@@ -174,7 +208,7 @@ check_site() {
 				echo "  $(t "Nessun indirizzo inserito." "No address entered.")"
 			fi
 			LOGIN=""
-			read -r -p "  $(t "[R]iprova o [S]alta i controlli sul login?" "[R]etry or [S]kip the login checks?") " ans || { SKIP=1; break; }
+			read -r -p "  $(t "Riprovo o salto i controlli sul login? [R/s]" "Retry or skip the login checks? [R/s]") " ans || { SKIP=1; break; }
 			[[ "$ans" =~ ^[sS] ]] && { SKIP=1; break; }
 		done
 	fi
@@ -211,13 +245,14 @@ check_site() {
 	for h in strict-transport-security x-content-type-options x-frame-options referrer-policy permissions-policy content-security-policy; do
 		grep -qi "^$h:" <<<"$H" && pass "$h" || hint "$(t "manca" "missing") $h"
 	done
-	how "$(t "Aggiungili nella configurazione del server (.htaccess, nginx) o con un plugin; CSP va provata con cura." "Add them in the server config (.htaccess, nginx) or with a plugin; test CSP carefully.")"
-	mark
+	hh=$((ko + warn - n0)); mark   # header advice is printed at the end of the section
 	v=$(grep -i '^x-powered-by:' <<<"$H" | head -1)
 	[[ -n "$v" ]] && hint "$(t "X-Powered-By mostra il software" "X-Powered-By shows the software"): ${v#*: }" || pass "$(t "X-Powered-By nascosto" "X-Powered-By hidden")"
 	v=$(grep -i '^server:' <<<"$H" | head -1)
 	[[ "$v" =~ [0-9] ]] && hint "$(t "Server mostra la versione" "Server shows its version"): ${v#*: }" || pass "$(t "Server senza versione" "Server without version")"
-	how "$(t "Nascondi le versioni nel server (es. ServerTokens Prod, server_tokens off, expose_php = Off)." "Hide versions in the server (e.g. ServerTokens Prod, server_tokens off, expose_php = Off).")"
+	hv=$((ko + warn - n0)); n0=-1   # n0=-1: the advice below is printed by the flags, not by the counters
+	(( hh )) && how "$(t "Aggiungi le intestazioni mancanti nella configurazione del server (.htaccess, nginx) o con un plugin; CSP va provata con cura." "Add the missing headers in the server config (.htaccess, nginx) or with a plugin; test CSP carefully.")"
+	(( hv )) && how "$(t "Nascondi le versioni nel server (es. ServerTokens Prod, server_tokens off, expose_php = Off)." "Hide versions in the server (e.g. ServerTokens Prod, server_tokens off, expose_php = Off).")"
 
 	echo; echo "== $(t "File che non devono essere scaricabili" "Files that must not be downloadable")"
 	mark
@@ -257,7 +292,7 @@ check_site() {
 	elif (( SKIP )); then
 		# Without the address, still report any login form found where it should not be.
 		for i in "${!RES[@]}"; do (( FORM[i] )) && fail "/${OLD[$i]} $(t "mostra il login" "shows the login") (${RES[$i]})"; done
-		SKIPPED="$(t "controlli sul login nascosto (indirizzo non indicato)" "hidden login checks (address not given)")"
+		skipped "$(t "controlli sul login nascosto (indirizzo non indicato)" "hidden login checks (address not given)")"
 	else
 		if [[ -n "$LOGIN" ]]; then
 			# A typed address was already confirmed above; only the case where it turned up by itself is left.
@@ -310,6 +345,24 @@ check_site() {
 	fi
 	how "$(t "Se non usi app o Jetpack, blocca /xmlrpc.php (server o plugin di sicurezza)." "If you use no apps or Jetpack, block /xmlrpc.php (server or security plugin).")"
 
+	# CAPTCHA on the login form actually used (standard or custom): read-only, the page is only looked at.
+	# It shows the widget is there, not that it is verified: the README has a manual test for that.
+	NOCAP=0; LURL=""
+	(( STD )) && LURL="$B/wp-login.php"; (( ! STD )) && [[ -n "$LOGIN" ]] && LURL="$B$LOGIN"
+	if [[ -n "$LURL" ]]; then
+		mark
+		cap=$(get "$LURL" | grep -oiE 'altcha|recaptcha|h-?captcha|turnstile|frc-captcha|friendly-?captcha|captcha' | head -1 | tr 'A-Z' 'a-z')
+		case "$cap" in h-captcha) cap=hcaptcha ;; frc-captcha|friendly-captcha) cap=friendlycaptcha ;; esac
+		if [[ -n "$cap" ]]; then
+			pass "$(t "CAPTCHA nel form di accesso" "CAPTCHA on the login form") ($cap)"
+		else
+			NOCAP=1
+			hint "$(t "Nessun CAPTCHA nel form di accesso: va bene con password forte, 2FA o un limite ai tentativi" "No CAPTCHA on the login form: fine with a strong password, 2FA or a limit on attempts")"
+		fi
+		how "$(t "Aggiungi un CAPTCHA (es. ALTCHA, Turnstile) e verifica che protegga proprio l'indirizzo di login che usi." "Add a CAPTCHA (e.g. ALTCHA, Turnstile) and make sure it protects the login address actually in use.")"
+		[[ -n "$cap" ]] && { mark; captcha_test "$LURL"; }
+	fi
+
 	echo; echo "== $(t "Nomi utente" "Usernames")"
 	mark
 	for u in "/wp-json/wp/v2/users" "/?rest_route=/wp/v2/users"; do
@@ -318,7 +371,8 @@ check_site() {
 	done
 	c=$(code "$B/?author=1"); l=$(loc "$B/?author=1")
 	[[ "$l" == */author/* ]] && fail "?author=1 $(t "rivela il nome" "reveals the name"): ${l%/}" || pass "?author=1 $(t "non rivela il nome" "does not reveal the name") ($c)"
-	how "$(t "Limita l'API degli utenti a chi ha fatto l'accesso e reindirizza ?author= alla home (plugin di sicurezza o poche righe di codice)." "Restrict the users API to logged-in users and redirect ?author= to the home page (security plugin or a few lines of code).")"
+	nc=""; (( NOCAP )) && nc=" $(t "Il login non ha CAPTCHA: un bot può provare password su questi nomi." "The login has no CAPTCHA: a bot can try passwords on these names.")"
+	how "$(t "Limita l'API degli utenti a chi ha fatto l'accesso e reindirizza ?author= alla home (plugin di sicurezza o poche righe di codice)." "Restrict the users API to logged-in users and redirect ?author= to the home page (security plugin or a few lines of code).")$nc"
 	a=$(get "$B/wp-json/oembed/1.0/embed?url=$B/" | grep -o '"author_url":"[^"]*"' | cut -d'"' -f4 | sed 's#\\/#/#g')
 	[[ -n "$a" ]] && hint "$(t "oEmbed mostra la pagina autore" "oEmbed shows the author page"): $a ($(t "nome pubblico: controlla che non sia quello di accesso" "public name: make sure it is not the login name"))"
 
