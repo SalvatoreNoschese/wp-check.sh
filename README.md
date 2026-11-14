@@ -2,7 +2,7 @@
 
 # wp-check
 
-![version](https://img.shields.io/badge/version-1.2-blue) ![license](https://img.shields.io/badge/license-GPLv3-green) ![bash](https://img.shields.io/badge/bash-3.2%2B-lightgrey)
+![version](https://img.shields.io/badge/version-1.3-blue) ![license](https://img.shields.io/badge/license-GPLv3-green) ![bash](https://img.shields.io/badge/bash-3.2%2B-lightgrey)
 
 A quick, outside-in security check of a WordPress site, in one bash script.
 It runs anywhere bash and curl do — Linux, macOS, even your phone with [Termux](https://termux.dev/) — and answers in English or Italian.
@@ -27,7 +27,13 @@ curl -fsSLO https://raw.githubusercontent.com/SalvatoreNoschese/wp-check.sh/main
 - **WordPress version**: in the home page, the feed, the `wp-includes` files
 - **Plugins**: those visible from the home page, and whether their `readme.txt` (which usually states the version) is readable
 
-Results: **✓** fine · **✗** to fix · **!** recommended, depends on the site. Each section with a ✗ or ! ends with a short **→** hint on how to fix it.
+Results: **✓** fine · **✗** to fix · **!** recommended, depends on the site · **?** not verifiable (see below). Each section with a ✗ or ! ends with a short **→** hint on how to fix it.
+
+### Sites behind a bot shield (Cloudflare, Imunify360, Sucuri…)
+
+Many hosts put a bot check in front of the site or of `wp-login.php` (Altervista, for one, uses Cloudflare's "Just a moment…" page), and firewall plugins can block a script too. A script cannot pass it, and what it gets back says nothing about the site: no login form does not mean the login was moved, and a `403` does not mean the file is protected. The script recognizes these answers and marks the check **?** (not verifiable), naming the shield, instead of guessing; the result then says it is partial. If the whole site answers that way, it stops at once.
+
+Recognized: Cloudflare, Imunify360, SiteGround Anti-Bot, Sucuri, Imperva (Incapsula), Akamai, AWS WAF/CloudFront, DDoS-Guard, Vercel, Anubis, Wordfence. Only signs of a block or a challenge count, never the mere presence of the service: a site behind Cloudflare that answers normally, or a login with a Turnstile CAPTCHA, is checked as usual.
 
 ## What it does not do
 
@@ -76,10 +82,11 @@ At the end it offers to check another site, quit, or delete the script. Run from
 
 ## Italiano
 
-Controllo rapido della sicurezza di un sito WordPress, visto da fuori. Funziona ovunque ci siano bash e curl, anche dal telefono con Termux, e risponde in italiano o in inglese. Fa solo richieste in lettura, come un visitatore qualsiasi: usalo sui tuoi siti. Cerca da solo il form di accesso su `wp-login.php` e sulle varianti che spesso sfuggono (`/wp-login.php/x`, `/wp-admin/x`, `/login`…) e chiede il login personalizzato solo se `wp-login.php` non lo mostra (se è sbagliato puoi riprovare o saltare quei controlli); poi controlla che nessun indirizzo e nessun link del sito lo riveli, e se il form di accesso ha un CAPTCHA. Se c'è, propone di verificare che blocchi davvero inviando il form una volta con un utente inventato: è l'unico controllo non in sola lettura, il server lo registra come accesso fallito, quindi chiede conferma (predefinito no) e va fatto solo sul proprio sito. Per ogni problema trovato dà un breve consiglio su come risolverlo. L'indirizzo di login personalizzato non viene mai mostrato. All'avvio avvisa se su GitHub c'è una versione più recente e propone di aggiornarsi (`--no-update` per saltare il controllo). Alla fine puoi controllare un altro sito, uscire o eliminare lo script. Articolo con i dettagli: [salvatorenoschese.it/wp-check***](https://salvatorenoschese.it/wp-check-sh-controlla-la-sicurezza-del-tuo-wordpress/).
+Controllo rapido della sicurezza di un sito WordPress, visto da fuori. Funziona ovunque ci siano bash e curl, anche dal telefono con Termux, e risponde in italiano o in inglese. Fa solo richieste in lettura, come un visitatore qualsiasi: usalo sui tuoi siti. Cerca da solo il form di accesso su `wp-login.php` e sulle varianti che spesso sfuggono (`/wp-login.php/x`, `/wp-admin/x`, `/login`…) e chiede il login personalizzato solo se `wp-login.php` non lo mostra (se è sbagliato puoi riprovare o saltare quei controlli); poi controlla che nessun indirizzo e nessun link del sito lo riveli, e se il form di accesso ha un CAPTCHA. Se c'è, propone di verificare che blocchi davvero inviando il form una volta con un utente inventato: è l'unico controllo non in sola lettura, il server lo registra come accesso fallito, quindi chiede conferma (predefinito no) e va fatto solo sul proprio sito. Per ogni problema trovato dà un breve consiglio su come risolverlo. Se davanti al sito o al login c'è una verifica anti-bot (Cloudflare, come su Altervista, ma anche Imunify360, Sucuri, Wordfence e altre), i controlli che ne dipendono sono segnati **?**, non verificabili, con il nome della protezione, invece di dare un risultato sbagliato. L'indirizzo di login personalizzato non viene mai mostrato. All'avvio avvisa se su GitHub c'è una versione più recente e propone di aggiornarsi (`--no-update` per saltare il controllo). Alla fine puoi controllare un altro sito, uscire o eliminare lo script. Articolo con i dettagli: [salvatorenoschese.it/wp-check***](https://salvatorenoschese.it/wp-check-sh-controlla-la-sicurezza-del-tuo-wordpress/).
 
 ## Changelog
 
+- **1.3** — Sites behind a bot shield: its challenge or block page is recognized and named (Cloudflare, Imunify360, SiteGround, Sucuri, Imperva, Akamai, AWS WAF, DDoS-Guard, Vercel, Anubis, Wordfence). On `wp-login.php` the login checks are skipped instead of asking for a custom path that does not exist; elsewhere the check is marked **?** (not verifiable) instead of a false ✓ for a `403`. The result counts them, names the shields met and says it is partial; if the whole site is behind the check, the script stops at once. Only block or challenge signs count: a normal answer behind Cloudflare, or a login with Turnstile, is checked as usual.
 - **1.2** — CAPTCHA check on the login form in use (standard or custom); stronger hint when usernames are public too. Optional test, after confirmation, that the CAPTCHA really blocks (one form sent with a made-up user). Skipped checks listed together. Clearer retry prompt for the login address; header advice at the end of its section.
 - **1.1** — New version check at start, with optional self-update (restarts with the same options; `--no-update` to skip it). A short hint on how to fix each problem found. Certificate expiry checked on the final host (e.g. `www.`) and working on macOS too. At the end: check another site, quit or delete the script. Login: finds the login form by itself, also on the variants (`/wp-login.php/x`, `/wp-admin/x`…); the custom path is asked only if `wp-login.php` does not show the login, and checked at once (retry or skip); looks for links to the hidden login in every page reached by following the internal links (only real links to the site, not the same word). Stops at once if the site does not answer or is not WordPress. Code comments in English only.
 - **1.0** — First release.
