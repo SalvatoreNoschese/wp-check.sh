@@ -5,7 +5,7 @@
 # CAPTCHA test with a made-up user). Use it on your own sites.
 # Salvatore Noschese — https://github.com/SalvatoreNoschese/wp-check.sh — GPLv3
 
-WPC_VER="1.3"
+WPC_VER="1.4"
 UPDATE_URL="https://raw.githubusercontent.com/SalvatoreNoschese/wp-check.sh/main/wp-check.sh"
 UA="Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
 ok=0; ko=0; warn=0; unv=0
@@ -86,6 +86,15 @@ shield_hit() { SHN="$1"; [[ " $SHSEEN " == *" $1 "* ]] || SHSEEN="${SHSEEN:+$SHS
 # shield FILE: the body in FILE, the headers of the last code or probe in $TMPH.
 shield() { shield_txt "$(head -c 20000 "$1" 2>/dev/null)" "$(cat "$TMPH" 2>/dev/null)"; }
 has_form() { grep -q 'name="log"' "$TMP" && grep -q 'name="pwd"' "$TMP"; }
+# is_html TEXT: true when TEXT is a web page (first non-empty line opens an HTML document).
+is_html() { grep -m1 -v '^[[:space:]]*$' <<<"$1" | grep -qiE '^[[:space:]]*(.{0,3})<(!doctype html|html[[:space:]>])'; }
+# wp_file NAME: true when the body in $TMPB is WordPress's own readme.html or license.txt, not another page.
+wp_file() {
+	case "$1" in
+		readme.html) grep -qiE 'WordPress &#8250; ReadMe|wordpress-logo\.png|Semantic Personal Publishing' "$TMPB" ;;
+		*) ! is_html "$(head -c 2000 "$TMPB")" ;;
+	esac
+}
 mask() { [[ -n "$LOGIN" ]] && printf '%s' "${1//$LOGIN/$HIDDEN}" || printf '%s' "$1"; }
 
 # --- Requirements ---
@@ -149,14 +158,15 @@ skipped() { SKIPPED+="${SKIPPED:+; }$1"; }
 captcha_test() {
 	local page act user resp code err ans
 	if [[ ! -t 0 || ! -t 1 ]]; then skipped "$(t "verifica che il CAPTCHA blocchi (serve una conferma)" "check that the CAPTCHA blocks (needs a confirmation)")"; return; fi
-	echo "    $(t "Verifico che il CAPTCHA blocchi davvero? Invia il form una volta, con un utente inventato e senza CAPTCHA." "Check that the CAPTCHA really blocks? It sends the form once, with a made-up user and no CAPTCHA.")"
-	echo "    $(t "Nessuno può entrare, ma il server lo registra come accesso fallito: fallo solo sul tuo sito." "Nobody can log in, but the server logs it as a failed login: do it only on your own site.")"
-	read -r -p "    $(t "Procedo? [s/N]" "Go ahead? [y/N]") " ans || ans=""
+	echo "    $(t "Test facoltativo: il CAPTCHA blocca davvero?" "Optional test: does the CAPTCHA really block?")"
+	echo "    $(t "Invia il form una volta, con un utente inventato e senza CAPTCHA." "It sends the form once, with a made-up user and no CAPTCHA.")"
+	echo "    $(t "Nessuno entra, ma il server registra un accesso fallito: solo sul tuo sito." "Nobody gets in, but the server logs a failed login: your own site only.")"
+	read -r -p "    $(t "Eseguo il test del CAPTCHA? [s/N]" "Run the CAPTCHA test? [y/N]") " ans || ans=""
 	if [[ ! "$ans" =~ ^[sSyY] ]]; then skipped "$(t "verifica che il CAPTCHA blocchi (non confermata)" "check that the CAPTCHA blocks (not confirmed)")"; return; fi
 	# Post where the form posts, as a browser would (the action may differ from the page address).
 	page=$(get "$1")
 	act=$(grep -oiE '<form[^>]*id="loginform"[^>]*>' <<<"$page" | grep -oiE 'action="[^"]+"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g; s/&#038;/\&/g')
-	[[ "$act" == /* ]] && act="$B$act"; [[ "$act" == http* ]] || act="$1"
+	[[ "$act" == /* ]] && act="$BH$act"; [[ "$act" == http* ]] || act="$1"
 	user="wpcheck_$(od -An -N5 -tx1 /dev/urandom | tr -d ' \n')"
 	resp=$(curl -sL --post301 --post302 -A "$UA" --max-time 15 -b "wordpress_test_cookie=WP%20Cookie%20check" \
 		--data "log=$user&pwd=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')&wp-submit=Log+In&testcookie=1" \
@@ -179,11 +189,14 @@ check_site() {
 	ok=0; ko=0; warn=0; unv=0; LSHIELD=0; SHN=""; SHSEEN=""
 	# --- Site ---
 	[[ -z "$S" ]] && { read -r -p "$(t "Sito da controllare (es. esempio.it)" "Site to check (e.g. example.com)"): " S; echo; }
-	S="${S#http://}"; S="${S#https://}"; S="${S%%/*}"
+	# Host in $S, subfolder (WordPress installed in /blog, say) in $P: "" for the root.
+	S="${S#http://}"; S="${S#https://}"; S="${S%%[?#]*}"
+	P=""; [[ "$S" == */* ]] && P="/${S#*/}"; S="${S%%/*}"
+	while [[ "$P" == */ ]]; do P="${P%/}"; done
 	[[ -z "$S" ]] && { t "Nessun sito indicato." "No site given."; echo; return 2; }
 	LOGIN=""; HIDDEN="/•••"; SKIP=0; SKIPPED=""
 
-	B="https://$S"
+	B="https://$S$P"
 	echo "== $B"
 
 	# 1. Does it answer?
@@ -199,8 +212,13 @@ check_site() {
 	fi
 	[[ "$c" =~ ^(200|301|302)$ ]] && pass "$(t "Il sito risponde" "Site responds") ($c)" || fail "$(t "La home risponde" "Home page answers") $c"
 	FINAL=$(curl -s -o /dev/null -L -A "$UA" --max-time 15 -w "%{url_effective}" "$B/")
-	B=$(sed -E 's#^(https?://[^/]+).*#\1#' <<<"$FINAL")
+	# The host the site ends on (e.g. www.), with the subfolder given: $BH is the host alone, for root-relative links.
+	BH=$(sed -E 's#^(https?://[^/]+).*#\1#' <<<"$FINAL"); B="$BH$P"
 	HTML=$(get "$B/")
+	# A page cache may serve a copy made long ago. The same home with a random parameter usually skips it:
+	# that one shows the site as it is now, while $HTML is what visitors (and bots) actually get.
+	FRESH=$(get "$B/?wpc=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')")
+	[[ -n "$FRESH" ]] || FRESH="$HTML"
 
 	# 2. Is it WordPress? admin-ajax.php answers 400 with the body "0": typical of WordPress, and it cannot
 	# be hidden without breaking plugins. (admin-post.php answers an empty 200, like many pages: alone it proves nothing.)
@@ -241,10 +259,12 @@ check_site() {
 	elif (( ! STD )) && [[ -z "$AUTO" ]]; then
 		echo
 		echo "  $(t "wp-login.php non mostra il form di accesso: il login è stato spostato a un indirizzo personalizzato." "wp-login.php does not show the login form: the login has been moved to a custom address.")"
-		echo "  $(t "Per controllare che sia davvero nascosto serve quell'indirizzo (non viene mostrato, né ora né nei risultati)." "To check it is really hidden, that address is needed (it is not shown, neither now nor in the results).")"
+		echo "  $(t "Per controllare che sia davvero nascosto serve quell'indirizzo (mai mostrato)." "To check it is really hidden, that address is needed (never shown).")"
 		while :; do
 			read -r -s -p "  $(t "Indirizzo di login" "Login address"): " LOGIN || { echo; SKIP=1; LOGIN=""; break; }
-			LOGIN="${LOGIN// /}"; LOGIN="${LOGIN#"$B"}"; LOGIN="${LOGIN#"$S"}"; LOGIN="${LOGIN%/}"
+			LOGIN="${LOGIN// /}"; LOGIN="${LOGIN#"$B"}"; LOGIN="${LOGIN#"$S$P"}"; LOGIN="${LOGIN#"$S"}"; LOGIN="${LOGIN%/}"
+				# Typed with the subfolder (/blog/secret): keep the part after it, the subfolder is already in $B.
+				[[ -n "$P" && "$LOGIN" == "$P"/* ]] && LOGIN="${LOGIN#"$P"}"
 			if [[ -n "$LOGIN" ]]; then
 				[[ "$LOGIN" != /* ]] && LOGIN="/$LOGIN"
 				r=$(probe "$B$LOGIN")
@@ -264,12 +284,12 @@ check_site() {
 	echo; echo "== HTTPS"
 	# Follow every redirect (e.g. http://site → http://www.site → https://www.site): where it ends is what counts.
 	mark
-	r=$(curl -s -o /dev/null -L -A "$UA" --max-time 15 -w "%{url_effective}" "http://$S/")
+	r=$(curl -s -o /dev/null -L -A "$UA" --max-time 15 -w "%{url_effective}" "http://$S$P/")
 	[[ "$r" == https://* ]] && pass "$(t "http reindirizza a https" "http redirects to https")" || fail "$(t "http non reindirizza a https" "http does not redirect to https") ($r)"
 	how "$(t "Reindirizza tutto http verso https (pannello dell'hosting, .htaccess o configurazione del server)." "Redirect all http traffic to https (hosting panel, .htaccess or server config).")"
 	if command -v openssl >/dev/null; then
 		# The certificate of the host the site ends on (e.g. www.site), not the one typed.
-		CH="${B#*://}"; CH="${CH%%:*}"
+		CH="${BH#*://}"; CH="${CH%%:*}"
 		cert=$(echo | openssl s_client -servername "$CH" -connect "$CH:443" 2>/dev/null | openssl x509 2>/dev/null)
 		if [[ -n "$cert" ]]; then
 			mark
@@ -313,6 +333,10 @@ check_site() {
 			# An executed wp-config.php returns an empty page: no data leaks.
 			if [[ "$f" == wp-config.php && -z "${body//[[:space:]]/}" ]]; then
 				pass "/$f $(t "eseguito, non leggibile (200 vuoto)" "executed, not readable (empty 200)")"
+			# Some sites answer 200 with a page (home, theme "not found") for files that do not exist: a web
+			# page is not the file. None of these files is HTML, so an HTML answer cannot be a leak.
+			elif is_html "$body"; then
+				pass "/$f (200: $(t "una pagina del sito, non il file" "a site page, not the file"))"
 			else
 				fail "/$f $(t "scaricabile" "downloadable") (200)"
 			fi
@@ -325,6 +349,7 @@ check_site() {
 	for f in readme.html license.txt; do
 		c=$(code "$B/$f")
 		if [[ "$c" != 200 ]] && shield "$TMPB"; then unk "/$f ($c)"
+		elif [[ "$c" == 200 ]] && ! wp_file "$f"; then pass "/$f (200: $(t "una pagina del sito, non il file" "a site page, not the file"))"
 		elif [[ "$c" == 200 ]]; then hint "/$f $(t "accessibile: rivela che è WordPress" "reachable: reveals it is WordPress")"
 		else pass "/$f ($c)"; fi
 	done
@@ -373,13 +398,15 @@ check_site() {
 			# Only links to THIS site: https://site/path, //site/path, https:\/\/site\/path (JSON)
 			# or relative href="/path". Not the same word anywhere, nor google.com/path.
 			q() { printf '%s' "$1" | sed 's/[.[\*^$()+?{}|]/\\&/g'; }
-			RX="((https?:)?(\\\\?/){2}$(q "${B#*://}")\\\\?/|[\"'(=]/)$(q "${LOGIN#/}")([/?#\"'<> &\\\\]|$)"
+			# Host and subfolder, with every / also matching \/ (JSON).
+			HP=$(q "${B#*://}" | sed 's#/#\\\\?/#g')
+			RX="((https?:)?(\\\\?/){2}$HP\\\\?/|[\"'(=]$(q "$P")/)$(q "${LOGIN#/}")([/?#\"'<> &\\\\]|$)"
 			leak=""
 			for u in / "$P404" /feed/; do get "$B$u" | grep -Eqi "$RX" && leak+=" ${u/$P404/404}"; done
 			[[ -n "$leak" ]] && { fail "$(t "Link al login personalizzato nel codice di" "Link to the custom login in the code of"):$leak"; lbad=$((lbad+1)); }
 		fi
 		links=$( { get "$B/"; get "$B$P404"; } | grep -oiE 'href=["'"'"'][^"'"'"'#]+' | sed -E 's/^href=.//' \
-			| sed -E "s#^//#https://#; s#^/#$B/#" | grep -iE "^${B//./\\.}(/|$)" \
+			| sed -E "s#^//#https://#; s#^/#$BH/#" | grep -iE "^${B//./\\.}(/|$)" \
 			| grep -viE '\.(css|js|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|xml|zip|gz|pdf|mp4|webm)(\?|$)' | sort -u | head -150)
 		# Every opened page: it must not be the login form and, when the path is known, must not link to it
 		# (a hidden link can sit in any post, not only in the theme).
@@ -442,21 +469,36 @@ check_site() {
 
 	echo; echo "== $(t "Versione di WordPress" "WordPress version")"
 	mark
-	g=$(grep -oiE '<meta name="generator" content="WordPress [^"]*"' <<<"$HTML" | head -1)
-	[[ -n "$g" ]] && hint "$(t "La home mostra la versione" "Home page shows the version"): ${g#*content=}" || pass "$(t "Nessuna versione nel codice della home" "No version in the home page code")"
+	# Every version is read in both pages: the fresh one tells the real version, the cached one what visitors
+	# see. When they differ the cached one is labelled, so two versions on screen are not a puzzle.
+	gv()  { grep -oiE '<meta name="generator" content="WordPress [0-9][^"]*"' <<<"$1" | head -1 | grep -oE '[0-9][0-9.]*' | head -1; }
+	# WordPress puts its own version in the ?ver= of wp-includes files (themes and plugins use their own).
+	wiv() { grep -oE 'wp-includes/[^"'"'"' ]+\?ver=[0-9]+\.[0-9][0-9.a-z-]*' <<<"$1" | grep -oE 'ver=[0-9][0-9.a-z-]*' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}' | cut -d= -f2; }
+	# vlab FRESH CACHED: the version to show, with the cached one when it differs or is the only one.
+	vlab() {
+		if [[ -n "$1" && -n "$2" && "$1" != "$2" ]]; then printf '%s (%s: %s)' "$1" "$(t "copia in cache" "cached copy")" "$2"
+		elif [[ -n "$1" ]]; then printf '%s' "$1"
+		else printf '%s (%s)' "$2" "$(t "copia in cache" "cached copy")"; fi
+	}
+	g=$(gv "$FRESH"); gc=$(gv "$HTML"); w=$(wiv "$FRESH"); wc=$(wiv "$HTML")
+	[[ -n "$g$gc" ]] && hint "$(t "La home mostra la versione" "Home page shows the version"): WordPress $(vlab "$g" "$gc")" || pass "$(t "Nessuna versione nel codice della home" "No version in the home page code")"
 	fd=$(get "$B/feed/"); f=$(grep -o '<generator>[^<]*' <<<"$fd" | head -1)
 	if shield_txt "$fd"; then unk "$(t "Versione nel feed" "Version in the feed")"
 	elif [[ "$f" == *"?v="* ]]; then hint "$(t "Il feed mostra la versione" "Feed shows the version"): ${f#<generator>}"
 	else pass "$(t "Nessuna versione nel feed" "No version in the feed")"; fi
-
-	# WordPress puts its own version in the ?ver= of wp-includes files (themes and plugins use their own).
-	wv=$(grep -oE 'wp-includes/[^"'"'"' ]+\?ver=[0-9]+\.[0-9][0-9.a-z-]*' <<<"$HTML" | grep -oE 'ver=[0-9][0-9.a-z-]*' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
-	[[ -n "$wv" ]] && hint "$(t "Versione nei file di wp-includes" "Version in wp-includes files"): ${wv#ver=}" || pass "$(t "Nessuna versione nei file di wp-includes" "No version in wp-includes files")"
+	[[ -n "$w$wc" ]] && hint "$(t "Versione nei file di wp-includes" "Version in wp-includes files"): $(vlab "$w" "$wc")" || pass "$(t "Nessuna versione nei file di wp-includes" "No version in wp-includes files")"
 	how "$(t "Togli la versione da generator, feed e ?ver= (plugin di sicurezza o ottimizzazione). Soprattutto: tieni WordPress aggiornato." "Remove the version from generator, feed and ?ver= (security or optimization plugin). Above all: keep WordPress updated.")"
+	# Two different versions: the page cache serves a home made before the last update.
+	rv="${g:-$w}"; cv="${gc:-$wc}"
+	if [[ -n "$rv" && -n "$cv" && "$rv" != "$cv" ]]; then
+		mark
+		hint "$(t "La cache serve una home vecchia: mostra WordPress $cv, il sito è alla $rv" "The page cache serves an old home page: it shows WordPress $cv, the site runs $rv")"
+		how "$(t "Svuota la cache delle pagine (plugin di cache, hosting o CDN) e controlla che scada da sola." "Purge the page cache (cache plugin, host or CDN) and make sure it expires on its own.")"
+	fi
 
 	echo; echo "== Plugin"
 	# Plugins show up from the paths in the home page; their readme.txt usually states the installed version.
-	plugins=$(grep -oE 'wp-content/plugins/[a-zA-Z0-9_-]+/' <<<"$HTML" | cut -d/ -f3 | sort -u)
+	plugins=$(grep -oE 'wp-content/plugins/[a-zA-Z0-9_-]+/' <<<"$HTML$FRESH" | cut -d/ -f3 | sort -u)
 	if [[ -z "$plugins" ]]; then
 		pass "$(t "Nessun plugin visibile nel codice della home" "No plugins visible in the home page code")"
 	else
@@ -484,6 +526,11 @@ check_site() {
 	echo "✗ = $(t "da sistemare" "to fix")   ! = $(t "consigliato, dipende dal sito" "recommended, depends on the site")"
 	(( unv )) && echo "? = $(t "non verificabile: ha risposto la protezione anti-bot ($SHSEEN) al posto del sito. Risultato parziale." "not verifiable: the bot shield ($SHSEEN) answered instead of the site. Partial result.")"
 	[[ -n "$SKIPPED" ]] && echo "$(t "Saltati" "Skipped"): $SKIPPED"
+	echo
+	printf '%s→ %s: https://tools.salvatorenoschese.it/%s\n' "$D" "$(t "Controlli sul dominio (Whois, DNS)" "Domain checks (Whois, DNS)")" "$N"
+	# The version is already in the welcome line. The star is asked only in a terminal, not in cron mail.
+	if [[ -t 1 ]]; then st="★ $(t "Ti è utile? Una stella su GitHub" "Useful? Star it on GitHub")"; else st="Salvatore Noschese"; fi
+	printf '%s%s: https://github.com/SalvatoreNoschese/wp-check.sh%s\n' "$D" "$st" "$N"
 	[[ $ko -eq 0 ]]
 }
 
